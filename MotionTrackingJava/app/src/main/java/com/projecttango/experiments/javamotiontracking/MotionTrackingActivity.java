@@ -16,16 +16,6 @@
 
 package com.projecttango.experiments.javamotiontracking;
 
-import com.google.atap.tangoservice.Tango;
-import com.google.atap.tangoservice.Tango.OnTangoUpdateListener;
-import com.google.atap.tangoservice.TangoConfig;
-import com.google.atap.tangoservice.TangoCoordinateFramePair;
-import com.google.atap.tangoservice.TangoErrorException;
-import com.google.atap.tangoservice.TangoEvent;
-import com.google.atap.tangoservice.TangoOutOfDateException;
-import com.google.atap.tangoservice.TangoPoseData;
-import com.google.atap.tangoservice.TangoXyzIjData;
-
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -39,6 +29,20 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.atap.tango.ux.TangoUx;
+import com.google.atap.tango.ux.TangoUxLayout;
+import com.google.atap.tango.ux.UxExceptionEvent;
+import com.google.atap.tango.ux.UxExceptionEventListener;
+import com.google.atap.tangoservice.Tango;
+import com.google.atap.tangoservice.Tango.OnTangoUpdateListener;
+import com.google.atap.tangoservice.TangoConfig;
+import com.google.atap.tangoservice.TangoCoordinateFramePair;
+import com.google.atap.tangoservice.TangoErrorException;
+import com.google.atap.tangoservice.TangoEvent;
+import com.google.atap.tangoservice.TangoOutOfDateException;
+import com.google.atap.tangoservice.TangoPoseData;
+import com.google.atap.tangoservice.TangoXyzIjData;
+
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 
@@ -51,8 +55,12 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
 
     private static final String TAG = MotionTrackingActivity.class.getSimpleName();
     private static final int SECS_TO_MILLISECS = 1000;
+    private static final int UPDATE_INTERVAL_MS = 100;
+
     private Tango mTango;
     private TangoConfig mConfig;
+    private TangoUx mTangoUx;
+
     private TextView mDeltaTextView;
     private TextView mPoseCountTextView;
     private TextView mPoseTextView;
@@ -62,6 +70,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     private TextView mApplicationVersionTextView;
     private TextView mTangoEventTextView;
     private Button mMotionResetButton;
+
     private float mPreviousTimeStamp;
     private int mPreviousPoseStatus;
     private int count;
@@ -71,7 +80,6 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     private GLSurfaceView mGLView;
     private boolean mIsProcessing = false;
     private TangoPoseData mPose;
-    private static final int UPDATE_INTERVAL_MS = 100;
     public static Object sharedLock = new Object();
 
     @Override
@@ -130,6 +138,16 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             Log.i(TAG, "Auto Reset Off");
         }
 
+        mTangoUx = new TangoUx.Builder(this)
+                .setTangoUxLayout((TangoUxLayout) findViewById(R.id.layout_tango))
+                .setUxExceptionEventListener(new UxExceptionEventListener() {
+                    @Override
+                    public void onUxExceptionEvent(UxExceptionEvent uxExceptionEvent) {
+                        Log.i(TAG, uxExceptionEvent.toString());
+                    }
+                })
+                .build();
+
         PackageInfo packageInfo;
         try {
             packageInfo = this.getPackageManager().getPackageInfo(this.getPackageName(), 0);
@@ -159,6 +177,8 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
 
             @Override
             public void onPoseAvailable(final TangoPoseData pose) {
+                mTangoUx.updatePoseStatus(pose.statusCode);
+
                 //Make sure to have atomic access to Tango Pose Data so that
                 //render loop doesn't interfere while Pose call back is updating
                 // the data.
@@ -178,7 +198,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                     // Update the OpenGL renderable objects with the new Tango Pose
                     // data
                     float[] translation = pose.getTranslationAsFloats();
-                    if(!mRenderer.isValid()){
+                    if (!mRenderer.isValid()) {
                         return;
                     }
                     mRenderer.getTrajectory().updateTrajectory(translation);
@@ -190,6 +210,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             @Override
             public void onXyzIjAvailable(TangoXyzIjData arg0) {
                 // We are not using TangoXyzIjData for this application
+                mTangoUx.updateXyzCount(arg0.xyzCount);
             }
 
             @Override
@@ -216,6 +237,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     @Override
     protected void onPause() {
         super.onPause();
+        mTangoUx.stop();
         try {
             mTango.disconnect();
         } catch (TangoErrorException e) {
@@ -225,6 +247,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
 
     protected void onResume() {
         super.onResume();
+
         try {
             setTangoListeners();
         } catch (TangoErrorException e) {
@@ -233,6 +256,9 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
             Toast.makeText(getApplicationContext(), R.string.motiontrackingpermission,
                     Toast.LENGTH_SHORT).show();
         }
+
+        mTangoUx.start();
+
         try {
             mTango.connect(mConfig);
         } catch (TangoOutOfDateException e) {
@@ -241,6 +267,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         } catch (TangoErrorException e) {
             Toast.makeText(getApplicationContext(), R.string.TangoError, Toast.LENGTH_SHORT).show();
         }
+
         try {
             setUpExtrinsics();
         } catch (TangoErrorException e) {
@@ -259,21 +286,21 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     @Override
     public void onClick(View v) {
         switch (v.getId()) {
-        case R.id.first_person_button:
-            mRenderer.setFirstPersonView();
-            break;
-        case R.id.top_down_button:
-            mRenderer.setTopDownView();
-            break;
-        case R.id.third_person_button:
-            mRenderer.setThirdPersonView();
-            break;
-        case R.id.resetmotion:
-            motionReset();
-            break;
-        default:
-            Log.w(TAG, "Unknown button click");
-            return;
+            case R.id.first_person_button:
+                mRenderer.setFirstPersonView();
+                break;
+            case R.id.top_down_button:
+                mRenderer.setTopDownView();
+                break;
+            case R.id.third_person_button:
+                mRenderer.setThirdPersonView();
+                break;
+            case R.id.resetmotion:
+                motionReset();
+                break;
+            default:
+                Log.w(TAG, "Unknown button click");
+                return;
         }
     }
 
@@ -281,7 +308,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     public boolean onTouchEvent(MotionEvent event) {
         return mRenderer.onTouchEvent(event);
     }
-    
+
     /**
      * Setup the extrinsics of the device.
      */
@@ -304,6 +331,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
         mRenderer.getModelMatCalculator().SetColorCamera2IMUMatrix(
                 color2IMUPose.getTranslationAsFloats(), color2IMUPose.getRotationAsFloats());
     }
+
     /**
      * Create a separate thread to update Log information on UI at the specified
      * interval of UPDATE_INTERVAL_MS. This function also makes sure to have access
@@ -312,6 +340,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
     private void startUIThread() {
         new Thread(new Runnable() {
             DecimalFormat threeDec = new DecimalFormat("00.000");
+
             @Override
             public void run() {
                 while (true) {
@@ -325,7 +354,7 @@ public class MotionTrackingActivity extends Activity implements View.OnClickList
                                         if (mPose == null) {
                                             return;
                                         }
-                                       
+
                                         String translationString = "["
                                                 + threeDec.format(mPose.translation[0]) + ", "
                                                 + threeDec.format(mPose.translation[1]) + ", "
